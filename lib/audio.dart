@@ -1,6 +1,8 @@
+import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 
 /// Prosedürel ses motoru — hiçbir ses dosyası yok; tüm efektler
 /// çalışma zamanında WAV olarak sentezlenir (APK boyutunu şişirmez).
@@ -15,6 +17,8 @@ class Sfx {
   final _pools = <String, List<AudioPlayer>>{};
   final _cursor = <String, int>{};
   final _wavs = <String, Uint8List>{};
+  final _files = <String, String>{};
+  Directory? _tmp;
   AudioPlayer? _ambient;
 
   Future<void> init() async {
@@ -162,26 +166,46 @@ class Sfx {
     });
   }
 
+  /// WAV byte'larını temp dosyaya yazıp DeviceFileSource ile çalar.
+  /// iOS'ta BytesSource implemente edilmediği için dosya yolu şart.
+  Future<String> _file(String key, Uint8List bytes) async {
+    final cached = _files[key];
+    if (cached != null) return cached;
+    _tmp ??= await getTemporaryDirectory();
+    final f = File('${_tmp!.path}/glowdeep_$key.wav');
+    await f.writeAsBytes(bytes);
+    return _files[key] = f.path;
+  }
+
+  Future<void> _playBytes(AudioPlayer p, String key, Uint8List bytes) async {
+    try {
+      await p.play(DeviceFileSource(await _file(key, bytes)));
+    } catch (e) {
+      debugPrint('Sfx($key) oynatılamadı: $e');
+    }
+  }
+
   void play(String name) {
     if (muted || !_ready) return;
     final pool = _pools[name];
     if (pool == null) return;
     final i = _cursor[name]! % pool.length;
     _cursor[name] = i + 1;
-    pool[i].play(BytesSource(_get(name)));
+    _playBytes(pool[i], name, _get(name));
   }
 
   void pickup(int combo) {
     if (muted || !_ready) return;
     // kombo yükseldikçe perde yükselir — çeşitlilik için yeniden sentezle
-    final key = 'pickup';
-    final pool = _pools[key]!;
-    final i = _cursor[key]! % pool.length;
-    _cursor[key] = i + 1;
-    final w = _wav(_tone(
+    final c = combo.clamp(0, 12);
+    final key = 'pickup_$c';
+    final pool = _pools['pickup']!;
+    final i = _cursor['pickup']! % pool.length;
+    _cursor['pickup'] = i + 1;
+    final w = _wavs.putIfAbsent(key, () => _wav(_tone(
         dur: .09, vol: .4, harmonic: .3,
-        freq: (t) => (700 + 70 * combo) + 800 * t));
-    pool[i].play(BytesSource(w));
+        freq: (t) => (700 + 70 * c) + 800 * t)));
+    _playBytes(pool[i], key, w);
   }
 
   // ------------------------------------------------------------------ MÜZIK
@@ -218,7 +242,7 @@ class Sfx {
     _melody ??= AudioPlayer()
       ..setReleaseMode(ReleaseMode.loop)
       ..setVolume(.5);
-    _melody!.play(BytesSource(w));
+    await _playBytes(_melody!, 'melody', w);
   }
 
   void stopMelody() {
@@ -232,29 +256,44 @@ class Sfx {
       _ambient?.pause();
       _melody?.pause();
     } else {
-      if (_ambientOn) _ambient?.resume();
-      if (_melodyOn) _melody?.resume();
+      if (_ambientOn) {
+        if (_ambient == null) {
+          startAmbient();
+        } else {
+          _ambient!.resume();
+        }
+      }
+      if (_melodyOn) {
+        if (_melody == null) {
+          startMelody();
+        } else {
+          _melody!.resume();
+        }
+      }
     }
   }
 
   Future<void> startAmbient() async {
     _ambientOn = true;
-    if (muted) return;
+    if (muted || !_ready) return;
     // 4 saniyelik yumuşak drone — döngülenir
-    final n = (4.0 * sr).round();
-    final out = List<double>.filled(n, 0);
-    for (var i = 0; i < n; i++) {
-      final t = i / sr;
-      out[i] = (sin(2 * pi * 110 * t) * .5 +
-              sin(2 * pi * 110.7 * t) * .3 +
-              sin(2 * pi * 165 * t + sin(2 * pi * .13 * t)) * .2) *
-          .12 *
-          (0.7 + 0.3 * sin(2 * pi * .1 * t));
-    }
+    final w = _wavs.putIfAbsent('ambient', () {
+      final n = (4.0 * sr).round();
+      final out = List<double>.filled(n, 0);
+      for (var i = 0; i < n; i++) {
+        final t = i / sr;
+        out[i] = (sin(2 * pi * 110 * t) * .5 +
+                sin(2 * pi * 110.7 * t) * .3 +
+                sin(2 * pi * 165 * t + sin(2 * pi * .13 * t)) * .2) *
+            .12 *
+            (0.7 + 0.3 * sin(2 * pi * .1 * t));
+      }
+      return _wav(out);
+    });
     _ambient ??= AudioPlayer()
       ..setReleaseMode(ReleaseMode.loop)
       ..setVolume(.5);
-    _ambient!.play(BytesSource(_wav(out)));
+    await _playBytes(_ambient!, 'ambient', w);
   }
 
   void stopAmbient() {
