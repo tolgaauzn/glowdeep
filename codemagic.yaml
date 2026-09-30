@@ -30,6 +30,8 @@ workflows:
         script: flutter pub get
       - name: Tests
         script: flutter test
+      - name: Set up code signing settings on Xcode project
+        script: xcode-project use-profiles
       - name: Build IPA
         script: |
           xcode-project build-ipa \
