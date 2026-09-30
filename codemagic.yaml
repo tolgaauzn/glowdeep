@@ -1,0 +1,43 @@
+# GLOWDEEP — Codemagic iOS build + App Store Connect yükleme
+#
+# Kurulum (bir kez, codemagic.io arayüzünde):
+#   1. Codemagic'e kaydol → GitHub repo'sunu bağla → "glowdeep" uygulaması ekle
+#   2. Teams → Integrations → App Store Connect → "glowdeep_asc" adıyla bağla
+#      (App Store Connect → Users and Access → Integrations → API key üret,
+#       Issuer ID + Key ID + .p8 dosyasını Codemagic'e gir)
+#   3. Bu dosya otomatik algılanır → "ios-release" workflow'unu çalıştır.
+#      ios_signing bloğu sayesinde sertifika/provisioning otomatik üretilir.
+
+workflows:
+  ios-release:
+    name: iOS Release
+    max_build_duration: 120
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: glowdeep_asc
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.tolgauzun.glowdeep
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      vars:
+        XCODE_WORKSPACE: "Runner.xcworkspace"
+        XCODE_SCHEME: "Runner"
+    scripts:
+      - name: Flutter dependencies
+        script: flutter pub get
+      - name: Tests
+        script: flutter test
+      - name: Build IPA
+        script: |
+          xcode-project build-ipa \
+            --workspace "ios/$XCODE_WORKSPACE" \
+            --scheme "$XCODE_SCHEME"
+    artifacts:
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
